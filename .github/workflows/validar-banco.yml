@@ -1,0 +1,63 @@
+name: Validar banco
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  postgresql:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 01 - DDL (cria o banco e as tabelas)
+        run: psql -v ON_ERROR_STOP=1 -d postgres -f database/01_ddl.sql
+
+      - name: 02 - DML (dados de teste)
+        run: psql -v ON_ERROR_STOP=1 -d clinica_medica -f database/02_dml.sql
+
+      - name: 03 - Indices (EXPLAIN antes e depois)
+        run: psql -v ON_ERROR_STOP=1 -d clinica_medica -f database/03_indices.sql
+
+      - name: 04 - Seguranca (usuarios e permissoes)
+        run: psql -v ON_ERROR_STOP=1 -d clinica_medica -f database/04_security.sql
+
+      - name: 05 - Transacoes (COMMIT, ROLLBACK e falha)
+        run: psql -v ON_ERROR_STOP=1 -d clinica_medica -f database/05_transactions.sql
+
+      - name: 05b - Falha crua (os ERRORs sao esperados)
+        run: |
+          psql -d clinica_medica -f database/05b_transacao_falha_demo.sql
+          saldo=$(psql -d clinica_medica -tAc "SELECT saldo FROM carteiras WHERE paciente_id = 3")
+          echo "Saldo da Carla apos a falha: $saldo"
+          test "$saldo" = "100.00"
+
+      - name: Login real como analista - SELECT funciona, DELETE e negado
+        env:
+          PGUSER: analista
+          PGPASSWORD: Analista#Dev2026
+        run: |
+          psql -d clinica_medica -c "SELECT COUNT(*) AS pacientes FROM pacientes"
+          if psql -d clinica_medica -c "DELETE FROM pacientes WHERE id = 1" 2> erro.txt; then
+            echo "FALHOU: o analista conseguiu apagar"; exit 1
+          fi
+          cat erro.txt
+          grep -q "permission denied for table pacientes" erro.txt
